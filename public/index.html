@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rastreamento de Ônibus TTT</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0;
+      background: #f3f4f6;
+      color: #333;
+      display: flex;
+      justify-content: center;
+      padding: 30px 15px;
+    }
+    #app-container {
+      max-width: 700px;
+      width: 100%;
+    }
+    h1 {
+      margin-bottom: 25px;
+      font-weight: 700;
+      font-size: 2rem;
+      text-align: center;
+      color: #1e293b;
+      user-select: none;
+    }
+    #status {
+      margin-bottom: 25px;
+      font-weight: 600;
+      color: #22c55e;
+      text-align: center;
+      min-height: 1.5em;
+      user-select: none;
+    }
+    .bus-container {
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 4px 10px rgb(0 0 0 / 0.1);
+      padding: 18px 25px;
+      margin-bottom: 20px;
+      transition: box-shadow 0.3s ease;
+      cursor: default;
+    }
+    .bus-container:hover {
+      box-shadow: 0 6px 20px rgb(0 0 0 / 0.15);
+    }
+    .bus-title {
+      font-size: 1.3rem;
+      font-weight: 700;
+      margin-bottom: 10px;
+      color: #0f172a;
+      user-select: text;
+    }
+    .bus-info p {
+      margin: 6px 0;
+      font-size: 0.95rem;
+      color: #475569;
+      line-height: 1.3;
+      user-select: text;
+    }
+    .bus-info strong {
+      color: #1e293b;
+    }
+    /* Formulário de atualização */
+    #locationForm {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 10px rgb(0 0 0 / 0.1);
+      padding: 20px 25px;
+      margin-bottom: 30px;
+    }
+    #locationForm label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 600;
+      color: #1e293b;
+    }
+    #locationForm select,
+    #locationForm input {
+      width: 100%;
+      padding: 8px 12px;
+      margin-bottom: 15px;
+      border: 1.5px solid #cbd5e1;
+      border-radius: 6px;
+      font-size: 1rem;
+      color: #334155;
+      transition: border-color 0.2s;
+    }
+    #locationForm select:focus,
+    #locationForm input:focus {
+      border-color: #2563eb;
+      outline: none;
+    }
+    #locationForm button {
+      background: #2563eb;
+      color: #fff;
+      font-weight: 700;
+      padding: 10px 0;
+      width: 100%;
+      border: none;
+      border-radius: 8px;
+      font-size: 1.1rem;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+    }
+    #locationForm button:hover {
+      background: #1e40af;
+    }
+    #geoButton {
+      background: #22c55e;
+      margin-bottom: 15px;
+    }
+    #geoButton:hover {
+      background: #16a34a;
+    }
+    /* Pequena responsividade */
+    @media (max-width: 480px) {
+      body {
+        padding: 15px 10px;
+      }
+      #app-container {
+        max-width: 100%;
+      }
+      .bus-container {
+        padding: 12px 15px;
+      }
+      .bus-title {
+        font-size: 1.1rem;
+      }
+      .bus-info p {
+        font-size: 0.9rem;
+      }
+      #locationForm {
+        padding: 15px 20px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app-container">
+    <h1>Rastreamento de Ônibus</h1>
+    <div id="status">Carregando...</div>
+
+    <form id="locationForm" onsubmit="return false;">
+      <label for="busSelect">Selecionar Ônibus</label>
+      <select id="busSelect" required>
+        <option value="" disabled selected>Escolha um ônibus</option>
+      </select>
+
+      <label for="directionSelect">Sentido da Viagem</label>
+      <select id="directionSelect" required>
+        <option value="toRodeio">Indo para o Rodeio</option>
+        <option value="toFCA">Voltando para a FCA</option>
+      </select>
+
+      <button type="button" id="geoButton">Obter localização atual</button>
+
+      <label for="latitudeInput">Latitude</label>
+      <input type="number" id="latitudeInput" step="any" required placeholder="Ex: -22.545678" />
+
+      <label for="longitudeInput">Longitude</label>
+      <input type="number" id="longitudeInput" step="any" required placeholder="Ex: -47.400123" />
+
+      <label for="speedInput">Velocidade (km/h)</label>
+      <input type="number" id="speedInput" step="0.1" min="0" placeholder="Ex: 40.5" />
+
+      <button type="submit" id="sendButton">Atualizar Localização</button>
+    </form>
+
+    <div id="busList"></div>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const busList = document.getElementById('busList');
+      const statusDiv = document.getElementById('status');
+      const busSelect = document.getElementById('busSelect');
+      const latitudeInput = document.getElementById('latitudeInput');
+      const longitudeInput = document.getElementById('longitudeInput');
+      const speedInput = document.getElementById('speedInput');
+      const geoButton = document.getElementById('geoButton');
+      const locationForm = document.getElementById('locationForm');
+      const sendButton = document.getElementById('sendButton');
+      const directionSelect = document.getElementById('directionSelect');
+      const socket = io();
+
+      // Salvar e carregar sentido no localStorage
+      if(localStorage.getItem('busDirection')) {
+        directionSelect.value = localStorage.getItem('busDirection');
+      }
+      directionSelect.addEventListener('change', () => {
+        localStorage.setItem('busDirection', directionSelect.value);
+        renderAllBuses(lastBusesData);
+      });
+
+      // Variável para armazenar dados atuais dos ônibus
+      let lastBusesData = [];
+
+      // Obter localização no carregamento da página
+      if(navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            latitudeInput.value = position.coords.latitude.toFixed(6);
+            longitudeInput.value = position.coords.longitude.toFixed(6);
+            speedInput.value = 0;
+          },
+          (error) => {
+            console.warn('Não foi possível obter localização automática:', error.message);
+          }
+        );
+      }
+
+      // Calcula tempo estimado
+      function tempoEstimado(distancia, velocidade) {
+        if (!velocidade || velocidade <= 0) return 'Indefinido';
+        const tempo = distancia / velocidade * 60;
+        return Math.round(tempo) + ' min';
+      }
+
+      // Função de cálculo da distância Haversine para uso no frontend (para getDistanceAndTime)
+      function toRad(deg) {
+        return deg * Math.PI / 180;
+      }
+      function calculateDistance(p1, p2) {
+        const R = 6371; // km
+        const dLat = toRad(p2.latitude - p1.latitude);
+        const dLon = toRad(p2.longitude - p1.longitude);
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(toRad(p1.latitude)) * Math.cos(toRad(p2.latitude)) *
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return Math.round(R * c * 100) / 100;
+      }
+
+      // Calcula distância e tempo para o sentido selecionado
+      function getDistanceAndTime(bus, direction) {
+        if (!bus.currentPosition) return { distance: null, time: 'Indefinido' };
+        let distance = null;
+        if(direction === 'toRodeio') {
+          distance = calculateDistance(bus.currentPosition, bus.finalPoint);
+        } else if(direction === 'toFCA') {
+          distance = calculateDistance(bus.currentPosition, bus.initialPoint);
+        }
+        const speed = bus.speed || 0;
+        const time = speed > 0 ? tempoEstimado(distance, speed) : 'Indefinido';
+        return { distance, time };
+      }
+
+      // Renderiza um ônibus
+      function renderBus(bus) {
+        const direction = (directionSelect && directionSelect.value) ? directionSelect.value : 'toRodeio';
+        const distAndTime = getDistanceAndTime(bus, direction);
+        const div = document.createElement('div');
+        div.className = 'bus-container';
+        div.id = bus.id;
+        div.innerHTML = `
+          <div class="bus-title">${bus.name}</div>
+          <div class="bus-info">
+            <p><strong>Rota:</strong> ${bus.route}</p>
+            <p><strong>Latitude:</strong> ${bus.currentPosition ? bus.currentPosition.latitude.toFixed(6) : 'Sem dados'}</p>
+            <p><strong>Longitude:</strong> ${bus.currentPosition ? bus.currentPosition.longitude.toFixed(6) : 'Sem dados'}</p>
+            <p><strong>Velocidade:</strong> ${bus.speed ? bus.speed.toFixed(1) : '0.0'} km/h</p>
+            <p><strong>Última atualização:</strong> ${bus.lastUpdate || 'Sem dados'}</p>
+            <p><strong>Sentido:</strong> ${direction === 'toRodeio' ? 'Indo para o Rodeio' : 'Voltando para a FCA'}</p>
+            <p><strong>Distância (sentido atual):</strong> ${distAndTime.distance !== null ? distAndTime.distance.toFixed(2) + ' km' : 'Sem dados'}</p>
+            <p><strong>Tempo Estimado (sentido atual):</strong> ${distAndTime.time}</p>
+          </div>
+        `;
+        return div;
+      }
+
+      // Renderiza a lista completa
+      function renderAllBuses(data) {
+        lastBusesData = data;
+        busList.innerHTML = '';
+        data.forEach(bus => {
+          const busDiv = renderBus(bus);
+          busList.appendChild(busDiv);
+        });
+      }
+
+      // Carrega todos os ônibus e atualiza select e lista
+      async function loadBuses() {
+        try {
+          const res = await fetch('/api/buses');
+          const data = await res.json();
+          if(data.success) {
+            // Preenche select
+            busSelect.innerHTML = '<option value="" disabled selected>Escolha um ônibus</option>';
+            data.data.forEach(bus => {
+              const option = document.createElement('option');
+              option.value = bus.id;
+              option.textContent = bus.name;
+              busSelect.appendChild(option);
+            });
+            statusDiv.textContent = 'Lista de ônibus atualizada';
+            statusDiv.style.color = '#22c55e';
+
+            // Renderiza lista de ônibus
+            renderAllBuses(data.data);
+          } else {
+            statusDiv.textContent = 'Erro ao carregar ônibus';
+            statusDiv.style.color = '#dc2626';
+          }
+        } catch(err) {
+          statusDiv.textContent = 'Erro na conexão';
+          statusDiv.style.color = '#dc2626';
+          console.error(err);
+        }
+      }
+
+      // Atualiza ônibus em tempo real via Socket.IO
+      socket.on('bus-position-update', () => {
+        loadBuses();
+      });
+
+      // Evento para pegar localização pelo navegador
+      geoButton.onclick = () => {
+        if (!navigator.geolocation) {
+          alert('Geolocalização não é suportada pelo seu navegador.');
+          return;
+        }
+        geoButton.disabled = true;
+        geoButton.textContent = 'Obtendo localização...';
+        navigator.geolocation.getCurrentPosition(
+          position => {
+            latitudeInput.value = position.coords.latitude.toFixed(6);
+            longitudeInput.value = position.coords.longitude.toFixed(6);
+            speedInput.value = 0;
+            geoButton.disabled = false;
+            geoButton.textContent = 'Obter localização atual';
+          },
+          error => {
+            alert('Erro ao obter localização: ' + error.message);
+            geoButton.disabled = false;
+            geoButton.textContent = 'Obter localização atual';
+          }
+        );
+      };
+
+      // Enviar atualização de localização para o servidor
+      locationForm.onsubmit = async () => {
+        const busId = busSelect.value;
+        const latitude = latitudeInput.value;
+        const longitude = longitudeInput.value;
+        const speed = speedInput.value || 0;
+
+        if(!busId) {
+          alert('Por favor, selecione um ônibus.');
+          return false;
+        }
+        if(!latitude || !longitude) {
+          alert('Por favor, preencha latitude e longitude.');
+          return false;
+        }
+
+        sendButton.disabled = true;
+        sendButton.textContent = 'Enviando...';
+        statusDiv.textContent = '';
+
+        try {
+          const res = await fetch(`/api/tracking/${busId}/location`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ latitude, longitude, speed })
+          });
+          const data = await res.json();
+
+          if(data.success) {
+            statusDiv.style.color = '#22c55e';
+            statusDiv.textContent = 'Localização atualizada com sucesso.';
+            loadBuses();
+          } else {
+            statusDiv.style.color = '#dc2626';
+            statusDiv.textContent = 'Erro: ' + data.message;
+          }
+        } catch(err) {
+          statusDiv.style.color = '#dc2626';
+          statusDiv.textContent = 'Falha na conexão ao enviar dados.';
+          console.error(err);
+        }
+        sendButton.disabled = false;
+        sendButton.textContent = 'Atualizar Localização';
+        return false;
+      };
+
+      // Inicializa carregando os ônibus ao abrir a página
+      loadBuses();
+    });
+  </script>
+</body>
+</html>
